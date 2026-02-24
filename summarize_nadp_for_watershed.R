@@ -337,22 +337,17 @@ ion_cols <- intersect(names(equiv_weights), names(nadp_wide))
 
 if(length(ion_cols) > 0 && 'pH' %in% names(nadp_wide)) {
 
-    nadp_wide <- nadp_wide %>%
-        mutate(
-            # Convert each ion from mg/L to ueq/L, then multiply by equiv conductance
-            Cond_est = {
-                cond <- rep(0, n())
-                for(ion in ion_cols) {
-                    conc_mgl <- .data[[ion]]
-                    conc_ueql <- conc_mgl / equiv_weights[ion] * 1000
-                    cond <- cond + conc_ueql * equiv_conductances[ion] / 1000
-                }
-                # Add H+ contribution from pH
-                H_ueql <- 10^(-pH) * 1e6  # mol/L -> ueq/L
-                cond <- cond + H_ueql * H_conductance / 1000
-                round(cond, 2)
-            }
-        )
+    # Compute estimated conductivity outside dplyr to avoid scoping issues
+    cond <- rep(0, nrow(nadp_wide))
+    for(ion in ion_cols) {
+        conc_mgl <- nadp_wide[[ion]]
+        conc_ueql <- conc_mgl / equiv_weights[ion] * 1000
+        cond <- cond + conc_ueql * equiv_conductances[ion] / 1000
+    }
+    # Add H+ contribution from pH
+    H_ueql <- 10^(-nadp_wide[['pH']]) * 1e6  # mol/L -> ueq/L
+    cond <- cond + H_ueql * H_conductance / 1000
+    nadp_wide$Cond_est <- round(cond, 2)
 
     message('Estimated conductivity (Cond_est, uS/cm) computed from ion concentrations and pH.')
 
