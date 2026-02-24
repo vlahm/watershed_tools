@@ -24,8 +24,9 @@ dir.create(nadp_dir, showWarnings = FALSE)
 # Available from NADP's gridded data: https://nadp.slh.wisc.edu/maps-data/ntn-gradient-maps/
 
 # Ion grids are precipitation-weighted mean concentrations in mg/L
-# H is hydrogen ion concentration (mg/L), provided directly by NADP
-nadp_vars <- c('pH', 'H', 'Ca', 'Mg', 'K', 'Na', 'Cl', 'NO3', 'NH4', 'SO4')
+# H+ is only available as deposition (_dep_), not concentration, so we
+# estimate H+ concentration from pH: [H+] mg/L = 10^(-pH) * 1.008 * 1000
+nadp_vars <- c('pH', 'Ca', 'Mg', 'K', 'Na', 'Cl', 'NO3', 'NH4', 'SO4')
 years <- 1985:2024  # adjust range as needed
 
 # Equivalent weights (mg/meq) for converting mg/L to ueq/L
@@ -45,10 +46,8 @@ equiv_conductances <- c(equiv_conductances, H = 349.8)
 # Zips contain raster data (ArcGrid or GeoTIFF)
 base_url <- 'https://nadp.slh.wisc.edu/filelib/maps/NTN/grids'
 
-# NADP uses these filename prefixes for concentration/deposition grids
-# Note: H+ uses 'hplus' prefix and '_dep_' suffix; others use '_conc_'
+# NADP filename prefixes for concentration grids (_conc_ suffix only)
 nadp_var_prefixes <- c(pH  = 'pH',
-                       H   = 'hplus',
                        Ca  = 'Ca',
                        Mg  = 'Mg',
                        K   = 'K',
@@ -71,7 +70,7 @@ sheds_bbox <- st_bbox(sheds_wgs84)
 download_nadp_raster <- function(variable, year, dest_dir) {
 
     prefix <- nadp_var_prefixes[variable]
-    suffixes <- c('_conc_', '_dep_')
+    suffixes <- c('_conc_')
 
     # Check if we already have an extracted raster for this variable/year
     for(sfx in suffixes) {
@@ -345,7 +344,6 @@ nadp_summary <- nadp_summary %>%
             variable == 'NO3'  ~ 'Precipitation-weighted mean NO3 (mg/L)',
             variable == 'NH4'  ~ 'Precipitation-weighted mean NH4 (mg/L)',
             variable == 'SO4'  ~ 'Precipitation-weighted mean SO4 (mg/L)',
-            variable == 'H'    ~ 'Precipitation-weighted mean H+ (mg/L)',
             TRUE ~ variable
         )
     )
@@ -363,11 +361,12 @@ ion_cols <- intersect(all_ions, names(nadp_wide))
 
 if(length(ion_cols) > 0) {
 
-    # If H not available directly, estimate from pH
-    if(! 'H' %in% names(nadp_wide) && 'pH' %in% names(nadp_wide)) {
-        nadp_wide$H <- 10^(-nadp_wide[['pH']]) * 1.008  # mol/L -> mg/L
+    # Estimate H+ concentration from pH: 10^(-pH) gives mol/L,
+    # multiply by molecular weight (1.008) and 1000 to get mg/L
+    if('pH' %in% names(nadp_wide)) {
+        nadp_wide$H <- 10^(-nadp_wide[['pH']]) * 1.008 * 1000
         ion_cols <- intersect(all_ions, names(nadp_wide))
-        message('H+ estimated from pH (direct H grid not available).')
+        message('H+ concentration estimated from pH grid.')
     }
 
     # Compute estimated conductivity, tolerating some missing ions
