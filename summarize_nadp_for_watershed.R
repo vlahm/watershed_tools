@@ -39,8 +39,20 @@ equiv_conductances <- c(Ca = 59.5, Mg = 53.1, K = 73.5, Na = 50.1,
 H_conductance <- 349.8
 
 # Base URL pattern for NADP NTN concentration grids (annual)
-# NADP provides these as GeoTIFFs via their data portal
-base_url <- 'https://nadp.slh.wisc.edu/datalib/ntn/grids/annual'
+# URL pattern: https://nadp.slh.wisc.edu/filelib/maps/NTN/grids/{year}/{var}_conc_{year}.zip
+# Zips contain raster data (ArcGrid or GeoTIFF)
+base_url <- 'https://nadp.slh.wisc.edu/filelib/maps/NTN/grids'
+
+# NADP uses these filename prefixes for concentration grids
+nadp_var_prefixes <- c(pH  = 'pH',
+                       Ca  = 'Ca',
+                       Mg  = 'Mg',
+                       K   = 'K',
+                       Na  = 'Na',
+                       Cl  = 'Cl',
+                       NO3 = 'NO3',
+                       NH4 = 'NH4',
+                       SO4 = 'SO4')
 
 # ---- prepare watershed geometries ----
 
@@ -54,49 +66,107 @@ sheds_bbox <- st_bbox(sheds_wgs84)
 
 download_nadp_raster <- function(variable, year, dest_dir) {
 
-    # NADP NTN annual concentration grids URL pattern
-    # pH: precipitation-weighted mean pH
-    # Cond: precipitation-weighted mean conductivity (uS/cm)
-    fname <- paste0(variable, '_', year, '.tif')
-    dest_file <- file.path(dest_dir, fname)
-
-    if(file.exists(dest_file)) {
-        message('Already downloaded: ', fname)
-        return(dest_file)
+    # Check if we already have an extracted raster for this variable/year
+    extracted_dir <- file.path(dest_dir, paste0(variable, '_conc_', year))
+    if(dir.exists(extracted_dir)) {
+        rast_file <- find_raster_in_dir(extracted_dir)
+        if(! is.null(rast_file)) {
+            message('Already extracted: ', variable, ' ', year)
+            return(rast_file)
+        }
     }
 
-    # Try common NADP URL patterns
-    urls_to_try <- c(
-        paste0(base_url, '/', variable, '/', year, '/', fname),
-        paste0(base_url, '/', variable, '/', fname),
-        paste0(base_url, '/', year, '/', fname)
-    )
+    # Also check for a .tif directly
+    tif_file <- file.path(dest_dir, paste0(variable, '_conc_', year, '.tif'))
+    if(file.exists(tif_file)) {
+        test <- try(rast(tif_file), silent = TRUE)
+        if(! inherits(test, 'try-error')) {
+            message('Already have: ', variable, ' ', year)
+            return(tif_file)
+        }
+    }
+
+    prefix <- nadp_var_prefixes[variable]
+    zip_name <- paste0(prefix, '_conc_', year, '.zip')
+    zip_file <- file.path(dest_dir, zip_name)
+
+    # Try URL patterns (case variations in prefix)
+    prefixes_to_try <- unique(c(prefix, tolower(prefix), toupper(prefix)))
+    urls_to_try <- unlist(lapply(prefixes_to_try, function(p) {
+        zn <- paste0(p, '_conc_', year, '.zip')
+        c(
+            paste0(base_url, '/', year, '/', zn),
+            paste0(base_url, '/', year, '/', tolower(zn))
+        )
+    }))
 
     for(url in urls_to_try) {
-        resp <- try(GET(url, write_disk(dest_file, overwrite = TRUE),
-                        timeout(60)), silent = TRUE)
+        resp <- try(GET(url, write_disk(zip_file, overwrite = TRUE),
+                        timeout(120)), silent = TRUE)
 
         if(! inherits(resp, 'try-error') && status_code(resp) == 200) {
-            # Verify it's a valid raster
-            test <- try(rast(dest_file), silent = TRUE)
-            if(! inherits(test, 'try-error')) {
-                message('Downloaded: ', fname)
-                return(dest_file)
+            # Try to unzip
+            exdir <- file.path(dest_dir, paste0(variable, '_conc_', year))
+            unzipped <- try(unzip(zip_file, exdir = exdir), silent = TRUE)
+
+            if(! inherits(unzipped, 'try-error') && length(unzipped) > 0) {
+                rast_file <- find_raster_in_dir(exdir)
+                if(! is.null(rast_file)) {
+                    message('Downloaded and extracted: ', variable, ' ', year)
+                    file.remove(zip_file)
+                    return(rast_file)
+                }
             }
+
+            # Clean up failed extraction
+            if(dir.exists(exdir)) unlink(exdir, recursive = TRUE)
         }
 
-        # Clean up failed download
-        if(file.exists(dest_file)) file.remove(dest_file)
+        if(file.exists(zip_file)) file.remove(zip_file)
     }
 
     message('Could not download: ', variable, ' ', year)
     return(NA_character_)
 }
 
+find_raster_in_dir <- function(dir_path) {
+    # Look for GeoTIFF first
+    tifs <- list.files(dir_path, pattern = '\\.tif$', full.names = TRUE,
+                       recursive = TRUE)
+    if(length(tifs) > 0) return(tifs[1])
+
+    # Look for ArcGrid (hdr.adf)
+    adfs <- list.files(dir_path, pattern = 'hdr\\.adf$', full.names = TRUE,
+                       recursive = TRUE, ignore.case = TRUE)
+    if(length(adfs) > 0) {
+        # Return the directory containing hdr.adf (that's the ArcGrid "file")
+        return(dirname(adfs[1]))
+    }
+
+    # Look for .asc (Arc ASCII grid)
+    ascs <- list.files(dir_path, pattern = '\\.asc$', full.names = TRUE,
+                       recursive = TRUE)
+    if(length(ascs) > 0) return(ascs[1])
+
+    # Look for .img
+    imgs <- list.files(dir_path, pattern = '\\.img$', full.names = TRUE,
+                       recursive = TRUE)
+    if(length(imgs) > 0) return(imgs[1])
+
+    # Try to load anything terra can read
+    all_files <- list.files(dir_path, full.names = TRUE, recursive = TRUE)
+    for(f in all_files) {
+        test <- try(rast(f), silent = TRUE)
+        if(! inherits(test, 'try-error')) return(f)
+    }
+
+    return(NULL)
+}
+
 message('Downloading NADP NTN annual rasters...')
 message('If automatic download fails, manually download rasters from:')
-message('  https://nadp.slh.wisc.edu/maps-data/ntn-gradient-maps/')
-message('Place .tif files in the nadp/ directory as {Variable}_{Year}.tif')
+message('  https://nadp.slh.wisc.edu/filelib/maps/NTN/grids/{year}/')
+message('Place zip files or extracted folders in the nadp/ directory')
 
 download_log <- expand.grid(variable = nadp_vars, year = years,
                             stringsAsFactors = FALSE) %>%
@@ -114,8 +184,8 @@ download_log <- download_log %>%
 
 if(nrow(download_log) == 0) {
     stop('No NADP rasters were downloaded. Please download manually from:\n',
-         '  https://nadp.slh.wisc.edu/maps-data/ntn-gradient-maps/\n',
-         'and place them in nadp/ as {Variable}_{Year}.tif\n',
+         '  https://nadp.slh.wisc.edu/filelib/maps/NTN/grids/{year}/\n',
+         'and place them in nadp/ (as zips or extracted folders)\n',
          'Then re-run this script.')
 }
 
@@ -123,49 +193,46 @@ message(nrow(download_log), ' rasters available for processing.')
 
 # ---- also check for any manually placed rasters ----
 
+# Check for .tif files and extracted directories
 manual_tifs <- list.files(nadp_dir, pattern = '\\.tif$', full.names = TRUE)
+manual_dirs <- list.dirs(nadp_dir, recursive = FALSE, full.names = TRUE)
+
+manual_entries <- list()
+
 if(length(manual_tifs) > 0) {
-    # Parse variable and year from filenames
-    manual_info <- tibble(filepath = manual_tifs) %>%
+    manual_entries[['tifs']] <- tibble(filepath = manual_tifs) %>%
         mutate(
             basename = tools::file_path_sans_ext(basename(filepath)),
-            variable = sub('_[0-9]{4}$', '', basename),
+            variable = sub('_(conc_)?[0-9]{4}$', '', basename),
             year = as.integer(sub('.*_', '', basename))
         ) %>%
-        filter(variable %in% c(nadp_vars, 'Cond_est'), ! is.na(year)) %>%
+        filter(variable %in% nadp_vars, ! is.na(year)) %>%
         select(variable, year, filepath)
+}
 
+if(length(manual_dirs) > 0) {
+    for(d in manual_dirs) {
+        dname <- basename(d)
+        # Parse variable_conc_year pattern
+        yr <- as.integer(sub('.*_', '', dname))
+        vr <- sub('_conc_[0-9]{4}$', '', dname)
+        if(! is.na(yr) && vr %in% nadp_vars) {
+            rast_file <- find_raster_in_dir(d)
+            if(! is.null(rast_file)) {
+                manual_entries[[d]] <- tibble(variable = vr, year = yr,
+                                             filepath = rast_file)
+            }
+        }
+    }
+}
+
+if(length(manual_entries) > 0) {
+    manual_info <- bind_rows(manual_entries)
     download_log <- bind_rows(download_log, manual_info) %>%
         distinct(variable, year, .keep_all = TRUE)
 }
 
 # ---- extract raster values for each watershed ----
-
-extract_nadp_for_sheds <- function(raster_path, sheds_sf) {
-
-    r <- try(rast(raster_path), silent = TRUE)
-    if(inherits(r, 'try-error')) return(NULL)
-
-    # Reproject watersheds to match raster CRS
-    sheds_reproj <- st_transform(sheds_sf, crs(r))
-
-    # Crop raster to watershed extent (with buffer) to speed extraction
-    sheds_extent <- ext(vect(sheds_reproj)) + 0.5  # ~0.5 degree buffer
-    r_crop <- try(crop(r, sheds_extent), silent = TRUE)
-    if(inherits(r_crop, 'try-error')) r_crop <- r
-
-    # Extract area-weighted mean for each polygon
-    vals <- exact_extract(r_crop, sheds_reproj, fun = 'mean')
-
-    if(is.null(vals)) {
-        # Fallback to terra::extract
-        vals <- terra::extract(r_crop, vect(sheds_reproj), fun = mean,
-                               na.rm = TRUE, weights = TRUE)
-        vals <- vals[, 2]
-    }
-
-    return(vals)
-}
 
 # Use exactextractr if available, otherwise terra::extract
 use_exactextractr <- requireNamespace('exactextractr', quietly = TRUE)
