@@ -19,12 +19,24 @@ nadp_dir <- 'nadp'
 dir.create(nadp_dir, showWarnings = FALSE)
 
 # NADP NTN annual raster base URL
-# Variables: pH (lab pH), Cond (conductivity, uS/cm)
-# Files are named like: pH_dep_2022.tif, Cond_dep_2022.tif
+# Variables: pH (lab pH), plus major ion concentrations (mg/L)
+# Conductivity is not provided directly, but can be estimated from ions.
 # Available from NADP's gridded data: https://nadp.slh.wisc.edu/maps-data/ntn-gradient-maps/
 
-nadp_vars <- c('pH', 'Cond')
+# Ion grids are precipitation-weighted mean concentrations in mg/L
+nadp_vars <- c('pH', 'Ca', 'Mg', 'K', 'Na', 'Cl', 'NO3', 'NH4', 'SO4')
 years <- 1985:2024  # adjust range as needed
+
+# Equivalent weights (mg/meq) for converting mg/L to ueq/L
+equiv_weights <- c(Ca = 20.04, Mg = 12.15, K = 39.10, Na = 22.99,
+                   Cl = 35.45, NO3 = 62.00, NH4 = 18.04, SO4 = 48.03)
+
+# Limiting equivalent conductances at 25C (uS/cm per ueq/L)
+# Sources: CRC Handbook / Standard Methods
+equiv_conductances <- c(Ca = 59.5, Mg = 53.1, K = 73.5, Na = 50.1,
+                        Cl = 76.3, NO3 = 71.4, NH4 = 73.5, SO4 = 80.0)
+# Note: H+ contributes too; will estimate from pH
+H_conductance <- 349.8
 
 # Base URL pattern for NADP NTN concentration grids (annual)
 # NADP provides these as GeoTIFFs via their data portal
@@ -120,7 +132,7 @@ if(length(manual_tifs) > 0) {
             variable = sub('_[0-9]{4}$', '', basename),
             year = as.integer(sub('.*_', '', basename))
         ) %>%
-        filter(variable %in% nadp_vars, ! is.na(year)) %>%
+        filter(variable %in% c(nadp_vars, 'Cond_est'), ! is.na(year)) %>%
         select(variable, year, filepath)
 
     download_log <- bind_rows(download_log, manual_info) %>%
@@ -214,7 +226,14 @@ nadp_summary <- nadp_summary %>%
     mutate(
         variable_description = case_when(
             variable == 'pH'   ~ 'Precipitation-weighted mean pH',
-            variable == 'Cond' ~ 'Precipitation-weighted mean conductivity (uS/cm)',
+            variable == 'Ca'   ~ 'Precipitation-weighted mean Ca (mg/L)',
+            variable == 'Mg'   ~ 'Precipitation-weighted mean Mg (mg/L)',
+            variable == 'K'    ~ 'Precipitation-weighted mean K (mg/L)',
+            variable == 'Na'   ~ 'Precipitation-weighted mean Na (mg/L)',
+            variable == 'Cl'   ~ 'Precipitation-weighted mean Cl (mg/L)',
+            variable == 'NO3'  ~ 'Precipitation-weighted mean NO3 (mg/L)',
+            variable == 'NH4'  ~ 'Precipitation-weighted mean NH4 (mg/L)',
+            variable == 'SO4'  ~ 'Precipitation-weighted mean SO4 (mg/L)',
             TRUE ~ variable
         )
     )
@@ -225,6 +244,44 @@ nadp_wide <- nadp_summary %>%
     pivot_wider(names_from = variable, values_from = value) %>%
     arrange(site_code, year)
 
+# ---- estimate conductivity from ions and pH ----
+
+ion_cols <- intersect(names(equiv_weights), names(nadp_wide))
+
+if(length(ion_cols) > 0 && 'pH' %in% names(nadp_wide)) {
+
+    nadp_wide <- nadp_wide %>%
+        mutate(
+            # Convert each ion from mg/L to ueq/L, then multiply by equiv conductance
+            Cond_est = {
+                cond <- rep(0, n())
+                for(ion in ion_cols) {
+                    conc_mgl <- .data[[ion]]
+                    conc_ueql <- conc_mgl / equiv_weights[ion] * 1000
+                    cond <- cond + conc_ueql * equiv_conductances[ion] / 1000
+                }
+                # Add H+ contribution from pH
+                H_ueql <- 10^(-pH) * 1e6  # mol/L -> ueq/L
+                cond <- cond + H_ueql * H_conductance / 1000
+                round(cond, 2)
+            }
+        )
+
+    message('Estimated conductivity (Cond_est, uS/cm) computed from ion concentrations and pH.')
+
+    # Also add to long format
+    cond_long <- nadp_wide %>%
+        select(site_code, year, Cond_est) %>%
+        mutate(variable = 'Cond_est',
+               variable_description = 'Estimated conductivity from ions + pH (uS/cm)') %>%
+        rename(value = Cond_est)
+
+    nadp_summary <- bind_rows(nadp_summary, cond_long)
+
+} else {
+    message('Not enough ion variables to estimate conductivity.')
+}
+
 # ---- save results ----
 
 write.csv(nadp_summary, 'nadp_watershed_summary_long.csv', row.names = FALSE)
@@ -232,7 +289,7 @@ write.csv(nadp_wide, 'nadp_watershed_summary_wide.csv', row.names = FALSE)
 
 message('\n---- Summary ----')
 message('Sites: ', paste(unique(nadp_summary$site_code), collapse = ', '))
-message('Variables: ', paste(unique(nadp_summary$variable), collapse = ', '))
+message('Variables: ', paste(sort(unique(nadp_summary$variable)), collapse = ', '))
 message('Years: ', min(nadp_summary$year), '-', max(nadp_summary$year))
 message('Results saved to:')
 message('  nadp_watershed_summary_long.csv')
