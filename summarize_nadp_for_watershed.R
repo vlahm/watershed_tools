@@ -45,9 +45,10 @@ equiv_conductances <- c(equiv_conductances, H = 349.8)
 # Zips contain raster data (ArcGrid or GeoTIFF)
 base_url <- 'https://nadp.slh.wisc.edu/filelib/maps/NTN/grids'
 
-# NADP uses these filename prefixes for concentration grids
+# NADP uses these filename prefixes for concentration/deposition grids
+# Note: H+ uses 'hplus' prefix and '_dep_' suffix; others use '_conc_'
 nadp_var_prefixes <- c(pH  = 'pH',
-                       H   = 'H',
+                       H   = 'hplus',
                        Ca  = 'Ca',
                        Mg  = 'Mg',
                        K   = 'K',
@@ -69,39 +70,58 @@ sheds_bbox <- st_bbox(sheds_wgs84)
 
 download_nadp_raster <- function(variable, year, dest_dir) {
 
+    prefix <- nadp_var_prefixes[variable]
+    suffixes <- c('_conc_', '_dep_')
+
     # Check if we already have an extracted raster for this variable/year
-    extracted_dir <- file.path(dest_dir, paste0(variable, '_conc_', year))
-    if(dir.exists(extracted_dir)) {
-        rast_file <- find_raster_in_dir(extracted_dir)
-        if(! is.null(rast_file)) {
-            message('Already extracted: ', variable, ' ', year)
-            return(rast_file)
+    for(sfx in suffixes) {
+        extracted_dir <- file.path(dest_dir, paste0(prefix, sfx, year))
+        if(dir.exists(extracted_dir)) {
+            rast_file <- find_raster_in_dir(extracted_dir)
+            if(! is.null(rast_file)) {
+                message('Already extracted: ', variable, ' ', year)
+                return(rast_file)
+            }
+        }
+        # Also check using the variable name (e.g. H_conc_)
+        extracted_dir2 <- file.path(dest_dir, paste0(variable, sfx, year))
+        if(extracted_dir2 != extracted_dir && dir.exists(extracted_dir2)) {
+            rast_file <- find_raster_in_dir(extracted_dir2)
+            if(! is.null(rast_file)) {
+                message('Already extracted: ', variable, ' ', year)
+                return(rast_file)
+            }
         }
     }
 
     # Also check for a .tif directly
-    tif_file <- file.path(dest_dir, paste0(variable, '_conc_', year, '.tif'))
-    if(file.exists(tif_file)) {
-        test <- try(rast(tif_file), silent = TRUE)
-        if(! inherits(test, 'try-error')) {
-            message('Already have: ', variable, ' ', year)
-            return(tif_file)
+    for(sfx in suffixes) {
+        for(pfx in c(prefix, variable)) {
+            tif_file <- file.path(dest_dir, paste0(pfx, sfx, year, '.tif'))
+            if(file.exists(tif_file)) {
+                test <- try(rast(tif_file), silent = TRUE)
+                if(! inherits(test, 'try-error')) {
+                    message('Already have: ', variable, ' ', year)
+                    return(tif_file)
+                }
+            }
         }
     }
 
-    prefix <- nadp_var_prefixes[variable]
-    zip_name <- paste0(prefix, '_conc_', year, '.zip')
-    zip_file <- file.path(dest_dir, zip_name)
+    zip_file <- file.path(dest_dir, paste0(prefix, '_', year, '.zip'))
 
-    # Try URL patterns (case variations in prefix)
+    # Try URL patterns: both _conc_ and _dep_ suffixes, case variations
     prefixes_to_try <- unique(c(prefix, tolower(prefix), toupper(prefix)))
     urls_to_try <- unlist(lapply(prefixes_to_try, function(p) {
-        zn <- paste0(p, '_conc_', year, '.zip')
-        c(
-            paste0(base_url, '/', year, '/', zn),
-            paste0(base_url, '/', year, '/', tolower(zn))
-        )
+        unlist(lapply(suffixes, function(sfx) {
+            zn <- paste0(p, sfx, year, '.zip')
+            c(
+                paste0(base_url, '/', year, '/', zn),
+                paste0(base_url, '/', year, '/', tolower(zn))
+            )
+        }))
     }))
+    urls_to_try <- unique(urls_to_try)
 
     max_retries <- 4
 
@@ -111,8 +131,9 @@ download_nadp_raster <- function(variable, year, dest_dir) {
                             timeout(120)), silent = TRUE)
 
             if(! inherits(resp, 'try-error') && status_code(resp) == 200) {
-                # Try to unzip
-                exdir <- file.path(dest_dir, paste0(variable, '_conc_', year))
+                # Try to unzip; use zip basename for directory name
+                zip_base <- tools::file_path_sans_ext(basename(url))
+                exdir <- file.path(dest_dir, zip_base)
                 unzipped <- try(unzip(zip_file, exdir = exdir), silent = TRUE)
 
                 if(! inherits(unzipped, 'try-error') && length(unzipped) > 0) {
