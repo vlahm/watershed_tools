@@ -24,7 +24,7 @@ dir.create(nadp_dir, showWarnings = FALSE)
 # Available from NADP's gridded data: https://nadp.slh.wisc.edu/maps-data/ntn-gradient-maps/
 
 nadp_vars <- c('pH', 'Cond')
-years <- 1985:2023  # adjust range as needed
+years <- 1985:2024  # adjust range as needed
 
 # Base URL pattern for NADP NTN concentration grids (annual)
 # NADP provides these as GeoTIFFs via their data portal
