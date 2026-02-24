@@ -24,7 +24,8 @@ dir.create(nadp_dir, showWarnings = FALSE)
 # Available from NADP's gridded data: https://nadp.slh.wisc.edu/maps-data/ntn-gradient-maps/
 
 # Ion grids are precipitation-weighted mean concentrations in mg/L
-nadp_vars <- c('pH', 'Ca', 'Mg', 'K', 'Na', 'Cl', 'NO3', 'NH4', 'SO4')
+# H is hydrogen ion concentration (mg/L), provided directly by NADP
+nadp_vars <- c('pH', 'H', 'Ca', 'Mg', 'K', 'Na', 'Cl', 'NO3', 'NH4', 'SO4')
 years <- 1985:2024  # adjust range as needed
 
 # Equivalent weights (mg/meq) for converting mg/L to ueq/L
@@ -35,8 +36,9 @@ equiv_weights <- c(Ca = 20.04, Mg = 12.15, K = 39.10, Na = 22.99,
 # Sources: CRC Handbook / Standard Methods
 equiv_conductances <- c(Ca = 59.5, Mg = 53.1, K = 73.5, Na = 50.1,
                         Cl = 76.3, NO3 = 71.4, NH4 = 73.5, SO4 = 80.0)
-# Note: H+ contributes too; will estimate from pH
-H_conductance <- 349.8
+# H+ equivalent weight and conductance
+equiv_weights <- c(equiv_weights, H = 1.008)
+equiv_conductances <- c(equiv_conductances, H = 349.8)
 
 # Base URL pattern for NADP NTN concentration grids (annual)
 # URL pattern: https://nadp.slh.wisc.edu/filelib/maps/NTN/grids/{year}/{var}_conc_{year}.zip
@@ -45,6 +47,7 @@ base_url <- 'https://nadp.slh.wisc.edu/filelib/maps/NTN/grids'
 
 # NADP uses these filename prefixes for concentration grids
 nadp_var_prefixes <- c(pH  = 'pH',
+                       H   = 'H',
                        Ca  = 'Ca',
                        Mg  = 'Mg',
                        K   = 'K',
@@ -321,6 +324,7 @@ nadp_summary <- nadp_summary %>%
             variable == 'NO3'  ~ 'Precipitation-weighted mean NO3 (mg/L)',
             variable == 'NH4'  ~ 'Precipitation-weighted mean NH4 (mg/L)',
             variable == 'SO4'  ~ 'Precipitation-weighted mean SO4 (mg/L)',
+            variable == 'H'    ~ 'Precipitation-weighted mean H+ (mg/L)',
             TRUE ~ variable
         )
     )
@@ -333,32 +337,55 @@ nadp_wide <- nadp_summary %>%
 
 # ---- estimate conductivity from ions and pH ----
 
-ion_cols <- intersect(names(equiv_weights), names(nadp_wide))
+all_ions <- names(equiv_weights)  # includes H
+ion_cols <- intersect(all_ions, names(nadp_wide))
 
-if(length(ion_cols) > 0 && 'pH' %in% names(nadp_wide)) {
+if(length(ion_cols) > 0) {
 
-    # Compute estimated conductivity outside dplyr to avoid scoping issues
-    cond <- rep(0, nrow(nadp_wide))
+    # If H not available directly, estimate from pH
+    if(! 'H' %in% names(nadp_wide) && 'pH' %in% names(nadp_wide)) {
+        nadp_wide$H <- 10^(-nadp_wide[['pH']]) * 1.008  # mol/L -> mg/L
+        ion_cols <- intersect(all_ions, names(nadp_wide))
+        message('H+ estimated from pH (direct H grid not available).')
+    }
+
+    # Compute estimated conductivity, tolerating some missing ions
+    # Each ion contributes independently; NA ions are skipped per row
+    n_rows <- nrow(nadp_wide)
+    cond <- rep(0, n_rows)
+    n_ions_available <- rep(0L, n_rows)
+
     for(ion in ion_cols) {
         conc_mgl <- nadp_wide[[ion]]
         conc_ueql <- conc_mgl / equiv_weights[ion] * 1000
-        cond <- cond + conc_ueql * equiv_conductances[ion] / 1000
+        contribution <- conc_ueql * equiv_conductances[ion] / 1000
+        has_val <- !is.na(contribution)
+        cond[has_val] <- cond[has_val] + contribution[has_val]
+        n_ions_available[has_val] <- n_ions_available[has_val] + 1L
     }
-    # Add H+ contribution from pH
-    H_ueql <- 10^(-nadp_wide[['pH']]) * 1e6  # mol/L -> ueq/L
-    cond <- cond + H_ueql * H_conductance / 1000
-    nadp_wide$Cond_est <- round(cond, 2)
 
-    message('Estimated conductivity (Cond_est, uS/cm) computed from ion concentrations and pH.')
+    # Set to NA if fewer than 7 of 9 ions are available (too incomplete)
+    max_possible <- length(ion_cols)
+    min_required <- max(max_possible - 2, 1)
+    cond[n_ions_available < min_required] <- NA_real_
+
+    nadp_wide$Cond_est <- round(cond, 2)
+    nadp_wide$Cond_est_n_ions <- n_ions_available
+
+    message('Estimated conductivity (Cond_est, uS/cm) computed from ion concentrations.')
+    message('  Ions used: ', paste(ion_cols, collapse = ', '))
+    message('  Min ions required per row: ', min_required, ' of ', max_possible)
+    message('  Rows with Cond_est: ', sum(!is.na(nadp_wide$Cond_est)),
+            ' of ', n_rows)
 
     # Also add to long format
     cond_long <- nadp_wide %>%
-        select(site_code, year, Cond_est) %>%
+        select(site_code, year, Cond_est, Cond_est_n_ions) %>%
         mutate(variable = 'Cond_est',
-               variable_description = 'Estimated conductivity from ions + pH (uS/cm)') %>%
+               variable_description = 'Estimated conductivity from ions (uS/cm)') %>%
         rename(value = Cond_est)
 
-    nadp_summary <- bind_rows(nadp_summary, cond_long)
+    nadp_summary <- bind_rows(nadp_summary, select(cond_long, -Cond_est_n_ions))
 
 } else {
     message('Not enough ion variables to estimate conductivity.')
