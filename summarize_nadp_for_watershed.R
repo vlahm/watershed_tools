@@ -37,9 +37,10 @@ equiv_weights <- c(Ca = 20.04, Mg = 12.15, K = 39.10, Na = 22.99,
 # Sources: CRC Handbook / Standard Methods
 equiv_conductances <- c(Ca = 59.5, Mg = 53.1, K = 73.5, Na = 50.1,
                         Cl = 76.3, NO3 = 71.4, NH4 = 73.5, SO4 = 80.0)
-# H+ equivalent weight and conductance
-equiv_weights <- c(equiv_weights, H = 1.008)
-equiv_conductances <- c(equiv_conductances, H = 349.8)
+# H+ equivalent weight and conductance (used in conductivity estimation;
+# H+ concentration is estimated from pH, not downloaded separately)
+H_equiv_weight <- 1.008
+H_equiv_conductance <- 349.8
 
 # Base URL pattern for NADP NTN concentration grids (annual)
 # URL pattern: https://nadp.slh.wisc.edu/filelib/maps/NTN/grids/{year}/{var}_conc_{year}.zip
@@ -356,18 +357,9 @@ nadp_wide <- nadp_summary %>%
 
 # ---- estimate conductivity from ions and pH ----
 
-all_ions <- names(equiv_weights)  # includes H
-ion_cols <- intersect(all_ions, names(nadp_wide))
+ion_cols <- intersect(names(equiv_weights), names(nadp_wide))
 
 if(length(ion_cols) > 0) {
-
-    # Estimate H+ concentration from pH: 10^(-pH) gives mol/L,
-    # multiply by molecular weight (1.008) and 1000 to get mg/L
-    if('pH' %in% names(nadp_wide)) {
-        nadp_wide$H <- 10^(-nadp_wide[['pH']]) * 1.008 * 1000
-        ion_cols <- intersect(all_ions, names(nadp_wide))
-        message('H+ concentration estimated from pH grid.')
-    }
 
     # Compute estimated conductivity, tolerating some missing ions
     # Each ion contributes independently; NA ions are skipped per row
@@ -384,8 +376,19 @@ if(length(ion_cols) > 0) {
         n_ions_available[has_val] <- n_ions_available[has_val] + 1L
     }
 
-    # Set to NA if fewer than 7 of 9 ions are available (too incomplete)
-    max_possible <- length(ion_cols)
+    # Add H+ contribution estimated from pH
+    if('pH' %in% names(nadp_wide)) {
+        H_mgl <- 10^(-nadp_wide[['pH']]) * H_equiv_weight * 1000
+        H_ueql <- H_mgl / H_equiv_weight * 1000
+        H_contribution <- H_ueql * H_equiv_conductance / 1000
+        has_H <- !is.na(H_contribution)
+        cond[has_H] <- cond[has_H] + H_contribution[has_H]
+        n_ions_available[has_H] <- n_ions_available[has_H] + 1L
+        message('H+ concentration estimated from pH for conductivity calculation.')
+    }
+
+    # Total possible ions = 8 measured + H from pH = 9
+    max_possible <- length(ion_cols) + as.integer('pH' %in% names(nadp_wide))
     min_required <- max(max_possible - 2, 1)
     cond[n_ions_available < min_required] <- NA_real_
 
