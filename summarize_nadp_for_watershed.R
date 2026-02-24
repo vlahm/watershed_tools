@@ -100,26 +100,46 @@ download_nadp_raster <- function(variable, year, dest_dir) {
         )
     }))
 
+    max_retries <- 4
+
     for(url in urls_to_try) {
-        resp <- try(GET(url, write_disk(zip_file, overwrite = TRUE),
-                        timeout(120)), silent = TRUE)
+        for(attempt in seq_len(max_retries)) {
+            resp <- try(GET(url, write_disk(zip_file, overwrite = TRUE),
+                            timeout(120)), silent = TRUE)
 
-        if(! inherits(resp, 'try-error') && status_code(resp) == 200) {
-            # Try to unzip
-            exdir <- file.path(dest_dir, paste0(variable, '_conc_', year))
-            unzipped <- try(unzip(zip_file, exdir = exdir), silent = TRUE)
+            if(! inherits(resp, 'try-error') && status_code(resp) == 200) {
+                # Try to unzip
+                exdir <- file.path(dest_dir, paste0(variable, '_conc_', year))
+                unzipped <- try(unzip(zip_file, exdir = exdir), silent = TRUE)
 
-            if(! inherits(unzipped, 'try-error') && length(unzipped) > 0) {
-                rast_file <- find_raster_in_dir(exdir)
-                if(! is.null(rast_file)) {
-                    message('Downloaded and extracted: ', variable, ' ', year)
-                    file.remove(zip_file)
-                    return(rast_file)
+                if(! inherits(unzipped, 'try-error') && length(unzipped) > 0) {
+                    rast_file <- find_raster_in_dir(exdir)
+                    if(! is.null(rast_file)) {
+                        message('Downloaded and extracted: ', variable, ' ', year)
+                        file.remove(zip_file)
+                        Sys.sleep(2)  # polite delay between successful downloads
+                        return(rast_file)
+                    }
                 }
+
+                # Clean up failed extraction
+                if(dir.exists(exdir)) unlink(exdir, recursive = TRUE)
+                break  # got 200 but extraction failed; try next URL
             }
 
-            # Clean up failed extraction
-            if(dir.exists(exdir)) unlink(exdir, recursive = TRUE)
+            if(file.exists(zip_file)) file.remove(zip_file)
+
+            # If connection error, retry with backoff
+            if(inherits(resp, 'try-error') ||
+               status_code(resp) %in% c(429, 500, 502, 503, 504)) {
+                wait <- 2^attempt + runif(1, 0, 1)
+                message('  Retry ', attempt, '/', max_retries,
+                        ' for ', variable, ' ', year,
+                        ' (waiting ', round(wait, 1), 's)')
+                Sys.sleep(wait)
+            } else {
+                break  # non-retryable HTTP error (e.g. 404); try next URL
+            }
         }
 
         if(file.exists(zip_file)) file.remove(zip_file)
