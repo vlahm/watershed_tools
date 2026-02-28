@@ -448,3 +448,11 @@ nadp_summary %>%
     ) %>%
     print(n = Inf)
 
+# aa <- ms_load_product(
+#   macrosheds_root = '~/ssd2/macrosheds_stuff/ms_test/',
+#   prodname = 'ws_attr_timeseries:climate',
+#   site_codes = sites
+# )
+# unique(aa$var)
+# filter(aa, var == 'Na_flux_mean', site_code == 'ALBION')
+# macrosheds::ms_vars_ws
