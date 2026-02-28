@@ -72,7 +72,7 @@ sheds_bbox <- st_bbox(sheds_wgs84)
 download_nadp_raster <- function(variable, year, dest_dir) {
 
     prefix <- nadp_var_prefixes[variable]
-    suffixes <- c('_conc_')
+    suffixes <- c('_conc_', '_')
 
     # Check if we already have an extracted raster for this variable/year
     for(sfx in suffixes) {
@@ -111,7 +111,8 @@ download_nadp_raster <- function(variable, year, dest_dir) {
 
     zip_file <- file.path(dest_dir, paste0(prefix, '_', year, '.zip'))
 
-    # Try URL patterns: both _conc_ and _dep_ suffixes, case variations
+    # Try URL patterns: _conc_ and bare _ suffixes, case variations
+    # e.g. pH_conc_2000.zip (older) vs pH_2023.zip (newer)
     prefixes_to_try <- unique(c(prefix, tolower(prefix), toupper(prefix)))
     urls_to_try <- unlist(lapply(prefixes_to_try, function(p) {
         unlist(lapply(suffixes, function(sfx) {
@@ -258,9 +259,9 @@ if(length(manual_tifs) > 0) {
 if(length(manual_dirs) > 0) {
     for(d in manual_dirs) {
         dname <- basename(d)
-        # Parse variable_conc_year pattern
+        # Parse variable_conc_year or variable_year pattern
         yr <- as.integer(sub('.*_', '', dname))
-        vr <- sub('_conc_[0-9]{4}$', '', dname)
+        vr <- sub('_(conc_)?[0-9]{4}$', '', dname)
         if(! is.na(yr) && vr %in% nadp_vars) {
             rast_file <- find_raster_in_dir(d)
             if(! is.null(rast_file)) {
