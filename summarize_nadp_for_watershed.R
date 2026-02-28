@@ -23,7 +23,9 @@ dir.create(nadp_dir, showWarnings = FALSE)
 # Conductivity is not provided directly, but can be estimated from ions.
 # Available from NADP's gridded data: https://nadp.slh.wisc.edu/maps-data/ntn-gradient-maps/
 
-# Ion grids are precipitation-weighted mean concentrations in mg/L
+# Ion grids are precipitation-weighted mean concentrations.
+# IMPORTANT: NADP reports most ions in mg/L, but Na, K, and Mg grids are
+# in ug/L. We convert these to mg/L after extraction.
 # H+ is only available as deposition (_dep_), not concentration, so we
 # estimate H+ concentration from pH: [H+] mg/L = 10^(-pH) * 1.008 * 1000
 nadp_vars <- c('pH', 'Ca', 'Mg', 'K', 'Na', 'Cl', 'NO3', 'NH4', 'SO4')
@@ -33,6 +35,9 @@ years <- 1985:2024  # adjust range as needed
 # Used to convert mg/L -> meq/L (divide), or mg/L -> ueq/L (divide, then * 1000)
 equiv_weights <- c(Ca = 20.04, Mg = 12.15, K = 39.10, Na = 22.99,
                    Cl = 35.45, NO3 = 62.00, NH4 = 18.04, SO4 = 48.03)
+
+# Variables whose NADP grids are in ug/L rather than mg/L
+vars_in_ugl <- c('Na', 'K', 'Mg')
 
 # Limiting equivalent conductances at 25C (uS/cm per ueq/L)
 # Sources: CRC Handbook / Standard Methods
@@ -326,6 +331,12 @@ for(i in seq_len(nrow(download_log))) {
         vals <- ex[, 2]
     }
 
+    # NADP reports Na, K, Mg in ug/L; convert to mg/L
+    if(row$variable %in% vars_in_ugl) {
+        vals <- vals / 1000
+        message('  Converted ', row$variable, ' from ug/L to mg/L')
+    }
+
     res <- tibble(
         site_code = sheds_wgs84$site_code,
         variable = row$variable,
@@ -357,7 +368,7 @@ nadp_summary <- nadp_summary %>%
         ),
         units = case_when(
             variable == 'pH'   ~ 'unitless',
-            variable %in% c('Ca', 'Mg', 'K', 'Na', 'Cl', 'NO3', 'NH4', 'SO4') ~ 'mg/L',
+            variable %in% c('Ca', 'Mg', 'K', 'Na', 'Cl', 'NO3', 'NH4', 'SO4') ~ 'mg/L (converted from ug/L for Na, K, Mg)',
             variable == 'Cond_est' ~ 'uS/cm',
             TRUE ~ NA_character_
         )
@@ -455,195 +466,3 @@ nadp_summary %>%
     ) %>%
     print(n = Inf)
 
-## ---- verify: compare Na flux grid to concentration grid × precip ----
-
-# Download 1985 Na deposition grid for comparison
-na_dep_url <- 'https://nadp.slh.wisc.edu/filelib/maps/NTN/grids/1985/Na_dep_1985.zip'
-na_dep_zip <- file.path(nadp_dir, 'Na_dep_1985.zip')
-na_dep_dir <- file.path(nadp_dir, 'Na_dep_1985')
-
-if(! dir.exists(na_dep_dir)) {
-    resp <- GET(na_dep_url, write_disk(na_dep_zip, overwrite = TRUE), timeout(120))
-    if(status_code(resp) == 200) {
-        unzip(na_dep_zip, exdir = na_dep_dir)
-        file.remove(na_dep_zip)
-        message('Downloaded Na deposition grid for 1985')
-    } else {
-        stop('Failed to download Na deposition grid')
-    }
-}
-
-na_dep_rast_path <- find_raster_in_dir(na_dep_dir)
-na_dep_r <- rast(na_dep_rast_path)
-if(nlyr(na_dep_r) > 1) na_dep_r <- na_dep_r[[1]]
-
-albion_shed <- sheds_wgs84 %>% filter(site_code == 'ALBION')
-albion_reproj <- st_transform(albion_shed, crs(na_dep_r))
-
-albion_ext <- ext(vect(albion_reproj)) + 0.5
-na_dep_crop <- crop(na_dep_r, albion_ext)
-
-if(use_exactextractr) {
-    na_dep_val <- exact_extract(na_dep_crop, albion_reproj, fun = 'mean')
-} else {
-    na_dep_ex <- terra::extract(na_dep_crop, vect(albion_reproj), fun = mean,
-                                na.rm = TRUE, weights = TRUE)
-    na_dep_val <- na_dep_ex[, 2]
-}
-
-message('\n---- Na flux verification (ALBION, 1985) ----')
-message('Na deposition from NADP _dep_ grid (kg/ha): ', round(na_dep_val, 4))
-
-# Get Na concentration from our extraction
-albion_na_conc_1985 <- nadp_wide %>%
-    filter(site_code == 'ALBION', year == 1985) %>%
-    pull(Na)
-message('Na concentration from NADP _conc_ grid (mg/L): ', round(albion_na_conc_1985, 4))
-
-# ---- detailed diagnostics for the concentration grid ----
-na_conc_1985_path <- download_log %>%
-    filter(variable == 'Na', year == 1985) %>%
-    pull(filepath)
-
-if(length(na_conc_1985_path) > 0 && !is.na(na_conc_1985_path)) {
-    na_conc_r <- rast(na_conc_1985_path)
-    if(nlyr(na_conc_r) > 1) na_conc_r <- na_conc_r[[1]]
-
-    message('\n---- Na conc grid diagnostics ----')
-    message('Raster file: ', na_conc_1985_path)
-    message('CRS: ', crs(na_conc_r, describe = TRUE)$name)
-    message('Resolution: ', paste(res(na_conc_r), collapse = ' x '))
-    message('Extent: ', paste(round(as.vector(ext(na_conc_r)), 4), collapse = ', '))
-    message('Global value range: min=', round(global(na_conc_r, 'min', na.rm=TRUE)[[1]], 4),
-            ' max=', round(global(na_conc_r, 'max', na.rm=TRUE)[[1]], 4),
-            ' mean=', round(global(na_conc_r, 'mean', na.rm=TRUE)[[1]], 4))
-
-    # Extract at ALBION centroid (point extraction, no area averaging)
-    albion_centroid <- st_centroid(albion_shed)
-    albion_pt_reproj <- st_transform(albion_centroid, crs(na_conc_r))
-    pt_val <- terra::extract(na_conc_r, vect(albion_pt_reproj))
-    message('Point extraction at ALBION centroid: ', pt_val[1, 2])
-
-    # Also extract from dep grid at same point for comparison
-    albion_pt_dep <- st_transform(albion_centroid, crs(na_dep_r))
-    pt_dep_val <- terra::extract(na_dep_r, vect(albion_pt_dep))
-    message('Na dep point extraction at ALBION centroid (kg/ha): ', pt_dep_val[1, 2])
-
-    # Check if conc grid might be in different units
-    # If truly mg/L, Na in precip should be ~0.05-0.5 mg/L for most of CONUS
-    # If the grid mean is >> 1, units are likely NOT mg/L
-    grid_mean <- global(na_conc_r, 'mean', na.rm = TRUE)[[1]]
-    if(grid_mean > 5) {
-        message('\nWARNING: Grid mean (', round(grid_mean, 2),
-                ') is very high for Na concentration in mg/L.')
-        message('The grid may use different units. Check NADP metadata.')
-        message('Possible interpretations:')
-        message('  If ug/L: divide by 1000 -> ', round(albion_na_conc_1985 / 1000, 4), ' mg/L')
-        message('  If ueq/L: multiply by equiv_weight/1000 -> ',
-                round(albion_na_conc_1985 * 22.99 / 1000, 4), ' mg/L')
-        message('  If 100*mg/L (scaled int): divide by 100 -> ',
-                round(albion_na_conc_1985 / 100, 4), ' mg/L')
-
-        # Back-calculate expected conc from dep grid and precip
-        message('\nExpected Na conc from dep/precip: ~0.1 mg/L')
-        message('Ratio of grid value to expected: ',
-                round(albion_na_conc_1985 / 0.108, 1), 'x')
-
-        # Check if ratio is close to a known conversion factor
-        ratio <- albion_na_conc_1985 / 0.108
-        message('If ratio ~ 1000: grid is in ug/L')
-        message('If ratio ~ ', round(1000/22.99, 1), ': grid is in ueq/L')
-        message('Actual ratio: ', round(ratio, 1))
-    }
-
-    # Compare CRS of conc vs dep grids
-    message('\nNa conc grid CRS: ', crs(na_conc_r, proj = TRUE))
-    message('Na dep grid CRS:  ', crs(na_dep_r, proj = TRUE))
-
-    # Check if the raster might have a scale/offset factor
-    message('Raster scale factor: ', na_conc_r@ptr$source.get_scale())
-    message('Raster offset: ', na_conc_r@ptr$source.get_offset())
-}
-
-## verify fluxes match
-library(lubridate)
-
-clim <- ms_load_product(
-  macrosheds_root = '~/ssd2/macrosheds_stuff/ms_test/',
-  prodname = 'ws_attr_timeseries:climate',
-  site_codes = 'ALBION',
-  warn = FALSE
-)
-p <- ms_load_product(
-  macrosheds_root = '~/ssd2/macrosheds_stuff/ms_test/',
-  prodname = 'precipitation',
-  site_codes = 'ALBION',
-  warn = FALSE
-)
-albion_na_flux_1985 <- filter(clim, var == 'Na_flux_mean') %>% slice(1)
-# filter(clim, var == 'precip_median', year == 1985) %>% summarize(val = sum(val))
-albion_p_1985 <- filter(p, year(date) == 1985) %>% summarize(val = sum(val))
-# albion_ha <- ms_load_sites() %>% filter(site_code == 'ALBION') %>% pull(ws_area_ha)
-
-albion_na_conc_1985_claude = filter(nadp_summary, variable == 'Na', site_code == 'ALBION', year == 1985)
-
-# Convert flux (kg/ha) to concentration (mg/L) using precip depth (mm)
-# kg/ha -> mg/ha: multiply by 1e6
-# mm precip -> L/ha: multiply by 1e4 (1 mm on 1 ha = 10,000 L)
-# concentration = (flux_kg_ha * 1e6) / (precip_mm * 1e4)
-albion_na_conc_1985_macrosheds = (albion_na_flux_1985$val * 1e6) / (albion_p_1985$val * 1e4)
-
-# Also compute from the NADP dep grid directly
-albion_na_conc_1985_from_dep = (na_dep_val * 1e6) / (albion_p_1985$val * 1e4)
-
-message('Na conc from macrosheds flux / precip (mg/L): ', round(albion_na_conc_1985_macrosheds, 4))
-message('Na conc from NADP dep grid / precip (mg/L):   ', round(albion_na_conc_1985_from_dep, 4))
-message('Na conc from NADP conc grid directly (mg/L):  ', round(albion_na_conc_1985_claude$value, 4))
-message('Precip from macrosheds (mm):                   ', round(albion_p_1985$val, 1))
-
-# ---- independent precip check: PRISM annual total ----
-
-if(requireNamespace('prism', quietly = TRUE)) {
-    library(prism)
-
-    prism_dir <- file.path(nadp_dir, 'prism')
-    dir.create(prism_dir, showWarnings = FALSE)
-    prism_set_dl_dir(prism_dir)
-
-    # Download 1985 annual precip (4km resolution)
-    get_prism_annual(type = 'ppt', years = 1985, keepZip = FALSE)
-
-    # Find the downloaded raster
-    prism_files <- prism_archive_ls()
-    ppt_file <- prism_files[grep('ppt.*1985', prism_files)]
-    ppt_path <- pd_to_file(ppt_file)
-
-    ppt_r <- rast(ppt_path)
-    albion_ppt_reproj <- st_transform(albion_shed, crs(ppt_r))
-
-    if(use_exactextractr) {
-        prism_ppt_val <- exact_extract(ppt_r, albion_ppt_reproj, fun = 'mean')
-    } else {
-        prism_ppt_ex <- terra::extract(ppt_r, vect(albion_ppt_reproj), fun = mean,
-                                       na.rm = TRUE, weights = TRUE)
-        prism_ppt_val <- prism_ppt_ex[, 2]
-    }
-
-    message('Precip from PRISM annual grid (mm):            ', round(prism_ppt_val, 1))
-
-    # Recompute Na concentration using PRISM precip
-    albion_na_conc_1985_prism_ms <- (albion_na_flux_1985$val * 1e6) / (prism_ppt_val * 1e4)
-    albion_na_conc_1985_prism_dep <- (na_dep_val * 1e6) / (prism_ppt_val * 1e4)
-
-    message('Na conc from macrosheds flux / PRISM precip (mg/L): ', round(albion_na_conc_1985_prism_ms, 4))
-    message('Na conc from NADP dep grid / PRISM precip (mg/L):   ', round(albion_na_conc_1985_prism_dep, 4))
-
-} else {
-    message('Install the prism package for independent precip verification:')
-    message('  install.packages("prism")')
-}
-
-# library(terra)
-# r <- rast("/home/mike/git/macrosheds/data_acquisition/data/spatial/ndap/1985/dep_na_1985.tif")
-# dd = feather::read_feather('/home/mike/git/macrosheds/data_acquisition/data/lter/niwot/ws_traits/nadp/sum_ALBION.feather')
-# dd %>% filter(year == 1985, var == 'ch_annual_Na_flux_mean')
