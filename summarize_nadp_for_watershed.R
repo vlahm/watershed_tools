@@ -455,11 +455,31 @@ nadp_summary %>%
     ) %>%
     print(n = Inf)
 
-# aa <- ms_load_product(
-#   macrosheds_root = '~/ssd2/macrosheds_stuff/ms_test/',
-#   prodname = 'ws_attr_timeseries:climate',
-#   site_codes = sites
-# )
-# unique(aa$var)
-# filter(aa, var == 'Na_flux_mean', site_code == 'ALBION')
-# macrosheds::ms_vars_ws
+## verify fluxes match
+library(lubridate)
+
+clim <- ms_load_product(
+  macrosheds_root = '~/ssd2/macrosheds_stuff/ms_test/',
+  prodname = 'ws_attr_timeseries:climate',
+  site_codes = 'ALBION',
+  warn = FALSE
+)
+p <- ms_load_product(
+  macrosheds_root = '~/ssd2/macrosheds_stuff/ms_test/',
+  prodname = 'precipitation',
+  site_codes = 'ALBION',
+  warn = FALSE
+)
+albion_na_flux_1985 <- filter(clim, var == 'Na_flux_mean') %>% slice(1)
+# filter(clim, var == 'precip_median', year == 1985) %>% summarize(val = sum(val))
+albion_p_1985 <- filter(p, year(date) == 1985) %>% summarize(val = sum(val))
+# albion_ha <- ms_load_sites() %>% filter(site_code == 'ALBION') %>% pull(ws_area_ha)
+
+albion_na_conc_1985_claude = filter(nadp_summary, variable == 'Na', site_code == 'ALBION', year == 1985)
+#mg/L                             kg/ha                     mg     mm       m^2    mm             L
+albion_na_conc_1985_macrosheds = (albion_na_flux_1985$val * 10e6 * 10e3) / (10e4 * albion_p_1985 * 1000)
+
+# library(terra)
+# r <- rast("/home/mike/git/macrosheds/data_acquisition/data/spatial/ndap/1985/dep_na_1985.tif")
+# dd = feather::read_feather('/home/mike/git/macrosheds/data_acquisition/data/lter/niwot/ws_traits/nadp/sum_ALBION.feather')
+# dd %>% filter(year == 1985, var == 'ch_annual_Na_flux_mean')
