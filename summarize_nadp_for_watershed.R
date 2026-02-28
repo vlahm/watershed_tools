@@ -303,6 +303,12 @@ for(i in seq_len(nrow(download_log))) {
         next
     }
 
+    # Ensure single layer (some ArcGrids may load multiple bands)
+    if(nlyr(r) > 1) {
+        message('  Multiple layers detected, using first layer only')
+        r <- r[[1]]
+    }
+
     # Reproject watersheds to match raster CRS
     sheds_reproj <- st_transform(sheds_wgs84, crs(r))
 
