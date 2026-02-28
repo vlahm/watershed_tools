@@ -534,6 +534,49 @@ albion_na_conc_1985_from_dep = (na_dep_val * 1e6) / (albion_p_1985$val * 1e4)
 message('Na conc from macrosheds flux / precip (mg/L): ', round(albion_na_conc_1985_macrosheds, 4))
 message('Na conc from NADP dep grid / precip (mg/L):   ', round(albion_na_conc_1985_from_dep, 4))
 message('Na conc from NADP conc grid directly (mg/L):  ', round(albion_na_conc_1985_claude$value, 4))
+message('Precip from macrosheds (mm):                   ', round(albion_p_1985$val, 1))
+
+# ---- independent precip check: PRISM annual total ----
+
+if(requireNamespace('prism', quietly = TRUE)) {
+    library(prism)
+
+    prism_dir <- file.path(nadp_dir, 'prism')
+    dir.create(prism_dir, showWarnings = FALSE)
+    prism_set_dl_dir(prism_dir)
+
+    # Download 1985 annual precip (4km resolution)
+    get_prism_annual(type = 'ppt', years = 1985, keepZip = FALSE)
+
+    # Find the downloaded raster
+    prism_files <- prism_archive_ls()
+    ppt_file <- prism_files[grep('ppt.*1985', prism_files)]
+    ppt_path <- pd_to_file(ppt_file)
+
+    ppt_r <- rast(ppt_path)
+    albion_ppt_reproj <- st_transform(albion_shed, crs(ppt_r))
+
+    if(use_exactextractr) {
+        prism_ppt_val <- exact_extract(ppt_r, albion_ppt_reproj, fun = 'mean')
+    } else {
+        prism_ppt_ex <- terra::extract(ppt_r, vect(albion_ppt_reproj), fun = mean,
+                                       na.rm = TRUE, weights = TRUE)
+        prism_ppt_val <- prism_ppt_ex[, 2]
+    }
+
+    message('Precip from PRISM annual grid (mm):            ', round(prism_ppt_val, 1))
+
+    # Recompute Na concentration using PRISM precip
+    albion_na_conc_1985_prism_ms <- (albion_na_flux_1985$val * 1e6) / (prism_ppt_val * 1e4)
+    albion_na_conc_1985_prism_dep <- (na_dep_val * 1e6) / (prism_ppt_val * 1e4)
+
+    message('Na conc from macrosheds flux / PRISM precip (mg/L): ', round(albion_na_conc_1985_prism_ms, 4))
+    message('Na conc from NADP dep grid / PRISM precip (mg/L):   ', round(albion_na_conc_1985_prism_dep, 4))
+
+} else {
+    message('Install the prism package for independent precip verification:')
+    message('  install.packages("prism")')
+}
 
 # library(terra)
 # r <- rast("/home/mike/git/macrosheds/data_acquisition/data/spatial/ndap/1985/dep_na_1985.tif")
