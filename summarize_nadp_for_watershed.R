@@ -455,6 +455,51 @@ nadp_summary %>%
     ) %>%
     print(n = Inf)
 
+## ---- verify: compare Na flux grid to concentration grid × precip ----
+
+# Download 1985 Na deposition grid for comparison
+na_dep_url <- 'https://nadp.slh.wisc.edu/filelib/maps/NTN/grids/1985/Na_dep_1985.zip'
+na_dep_zip <- file.path(nadp_dir, 'Na_dep_1985.zip')
+na_dep_dir <- file.path(nadp_dir, 'Na_dep_1985')
+
+if(! dir.exists(na_dep_dir)) {
+    resp <- GET(na_dep_url, write_disk(na_dep_zip, overwrite = TRUE), timeout(120))
+    if(status_code(resp) == 200) {
+        unzip(na_dep_zip, exdir = na_dep_dir)
+        file.remove(na_dep_zip)
+        message('Downloaded Na deposition grid for 1985')
+    } else {
+        stop('Failed to download Na deposition grid')
+    }
+}
+
+na_dep_rast_path <- find_raster_in_dir(na_dep_dir)
+na_dep_r <- rast(na_dep_rast_path)
+if(nlyr(na_dep_r) > 1) na_dep_r <- na_dep_r[[1]]
+
+albion_shed <- sheds_wgs84 %>% filter(site_code == 'ALBION')
+albion_reproj <- st_transform(albion_shed, crs(na_dep_r))
+
+albion_ext <- ext(vect(albion_reproj)) + 0.5
+na_dep_crop <- crop(na_dep_r, albion_ext)
+
+if(use_exactextractr) {
+    na_dep_val <- exact_extract(na_dep_crop, albion_reproj, fun = 'mean')
+} else {
+    na_dep_ex <- terra::extract(na_dep_crop, vect(albion_reproj), fun = mean,
+                                na.rm = TRUE, weights = TRUE)
+    na_dep_val <- na_dep_ex[, 2]
+}
+
+message('\n---- Na flux verification (ALBION, 1985) ----')
+message('Na deposition from NADP _dep_ grid (kg/ha): ', round(na_dep_val, 4))
+
+# Get Na concentration from our extraction
+albion_na_conc_1985 <- nadp_wide %>%
+    filter(site_code == 'ALBION', year == 1985) %>%
+    pull(Na)
+message('Na concentration from NADP _conc_ grid (mg/L): ', round(albion_na_conc_1985, 4))
+
 ## verify fluxes match
 library(lubridate)
 
@@ -476,8 +521,19 @@ albion_p_1985 <- filter(p, year(date) == 1985) %>% summarize(val = sum(val))
 # albion_ha <- ms_load_sites() %>% filter(site_code == 'ALBION') %>% pull(ws_area_ha)
 
 albion_na_conc_1985_claude = filter(nadp_summary, variable == 'Na', site_code == 'ALBION', year == 1985)
-#mg/L                             kg/ha                     mg     mm       m^2    mm             L
-albion_na_conc_1985_macrosheds = (albion_na_flux_1985$val * 10e6 * 10e3) / (10e4 * albion_p_1985 * 1000)
+
+# Convert flux (kg/ha) to concentration (mg/L) using precip depth (mm)
+# kg/ha -> mg/ha: multiply by 1e6
+# mm precip -> L/ha: multiply by 1e4 (1 mm on 1 ha = 10,000 L)
+# concentration = (flux_kg_ha * 1e6) / (precip_mm * 1e4)
+albion_na_conc_1985_macrosheds = (albion_na_flux_1985$val * 1e6) / (albion_p_1985$val * 1e4)
+
+# Also compute from the NADP dep grid directly
+albion_na_conc_1985_from_dep = (na_dep_val * 1e6) / (albion_p_1985$val * 1e4)
+
+message('Na conc from macrosheds flux / precip (mg/L): ', round(albion_na_conc_1985_macrosheds, 4))
+message('Na conc from NADP dep grid / precip (mg/L):   ', round(albion_na_conc_1985_from_dep, 4))
+message('Na conc from NADP conc grid directly (mg/L):  ', round(albion_na_conc_1985_claude$value, 4))
 
 # library(terra)
 # r <- rast("/home/mike/git/macrosheds/data_acquisition/data/spatial/ndap/1985/dep_na_1985.tif")
