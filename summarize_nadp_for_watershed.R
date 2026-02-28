@@ -500,6 +500,71 @@ albion_na_conc_1985 <- nadp_wide %>%
     pull(Na)
 message('Na concentration from NADP _conc_ grid (mg/L): ', round(albion_na_conc_1985, 4))
 
+# ---- detailed diagnostics for the concentration grid ----
+na_conc_1985_path <- download_log %>%
+    filter(variable == 'Na', year == 1985) %>%
+    pull(filepath)
+
+if(length(na_conc_1985_path) > 0 && !is.na(na_conc_1985_path)) {
+    na_conc_r <- rast(na_conc_1985_path)
+    if(nlyr(na_conc_r) > 1) na_conc_r <- na_conc_r[[1]]
+
+    message('\n---- Na conc grid diagnostics ----')
+    message('Raster file: ', na_conc_1985_path)
+    message('CRS: ', crs(na_conc_r, describe = TRUE)$name)
+    message('Resolution: ', paste(res(na_conc_r), collapse = ' x '))
+    message('Extent: ', paste(round(as.vector(ext(na_conc_r)), 4), collapse = ', '))
+    message('Global value range: min=', round(global(na_conc_r, 'min', na.rm=TRUE)[[1]], 4),
+            ' max=', round(global(na_conc_r, 'max', na.rm=TRUE)[[1]], 4),
+            ' mean=', round(global(na_conc_r, 'mean', na.rm=TRUE)[[1]], 4))
+
+    # Extract at ALBION centroid (point extraction, no area averaging)
+    albion_centroid <- st_centroid(albion_shed)
+    albion_pt_reproj <- st_transform(albion_centroid, crs(na_conc_r))
+    pt_val <- terra::extract(na_conc_r, vect(albion_pt_reproj))
+    message('Point extraction at ALBION centroid: ', pt_val[1, 2])
+
+    # Also extract from dep grid at same point for comparison
+    albion_pt_dep <- st_transform(albion_centroid, crs(na_dep_r))
+    pt_dep_val <- terra::extract(na_dep_r, vect(albion_pt_dep))
+    message('Na dep point extraction at ALBION centroid (kg/ha): ', pt_dep_val[1, 2])
+
+    # Check if conc grid might be in different units
+    # If truly mg/L, Na in precip should be ~0.05-0.5 mg/L for most of CONUS
+    # If the grid mean is >> 1, units are likely NOT mg/L
+    grid_mean <- global(na_conc_r, 'mean', na.rm = TRUE)[[1]]
+    if(grid_mean > 5) {
+        message('\nWARNING: Grid mean (', round(grid_mean, 2),
+                ') is very high for Na concentration in mg/L.')
+        message('The grid may use different units. Check NADP metadata.')
+        message('Possible interpretations:')
+        message('  If ug/L: divide by 1000 -> ', round(albion_na_conc_1985 / 1000, 4), ' mg/L')
+        message('  If ueq/L: multiply by equiv_weight/1000 -> ',
+                round(albion_na_conc_1985 * 22.99 / 1000, 4), ' mg/L')
+        message('  If 100*mg/L (scaled int): divide by 100 -> ',
+                round(albion_na_conc_1985 / 100, 4), ' mg/L')
+
+        # Back-calculate expected conc from dep grid and precip
+        message('\nExpected Na conc from dep/precip: ~0.1 mg/L')
+        message('Ratio of grid value to expected: ',
+                round(albion_na_conc_1985 / 0.108, 1), 'x')
+
+        # Check if ratio is close to a known conversion factor
+        ratio <- albion_na_conc_1985 / 0.108
+        message('If ratio ~ 1000: grid is in ug/L')
+        message('If ratio ~ ', round(1000/22.99, 1), ': grid is in ueq/L')
+        message('Actual ratio: ', round(ratio, 1))
+    }
+
+    # Compare CRS of conc vs dep grids
+    message('\nNa conc grid CRS: ', crs(na_conc_r, proj = TRUE))
+    message('Na dep grid CRS:  ', crs(na_dep_r, proj = TRUE))
+
+    # Check if the raster might have a scale/offset factor
+    message('Raster scale factor: ', na_conc_r@ptr$source.get_scale())
+    message('Raster offset: ', na_conc_r@ptr$source.get_offset())
+}
+
 ## verify fluxes match
 library(lubridate)
 
