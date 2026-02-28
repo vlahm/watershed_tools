@@ -29,7 +29,8 @@ dir.create(nadp_dir, showWarnings = FALSE)
 nadp_vars <- c('pH', 'Ca', 'Mg', 'K', 'Na', 'Cl', 'NO3', 'NH4', 'SO4')
 years <- 1985:2024  # adjust range as needed
 
-# Equivalent weights (mg/meq) for converting mg/L to ueq/L
+# Equivalent weights (mg/meq = g/eq = molecular weight / ionic charge)
+# Used to convert mg/L -> meq/L (divide), or mg/L -> ueq/L (divide, then * 1000)
 equiv_weights <- c(Ca = 20.04, Mg = 12.15, K = 39.10, Na = 22.99,
                    Cl = 35.45, NO3 = 62.00, NH4 = 18.04, SO4 = 48.03)
 
@@ -332,20 +333,26 @@ for(i in seq_len(nrow(download_log))) {
 
 nadp_summary <- bind_rows(results)
 
-# Add descriptive labels
+# Add descriptive labels and units
 nadp_summary <- nadp_summary %>%
     mutate(
         variable_description = case_when(
             variable == 'pH'   ~ 'Precipitation-weighted mean pH',
-            variable == 'Ca'   ~ 'Precipitation-weighted mean Ca (mg/L)',
-            variable == 'Mg'   ~ 'Precipitation-weighted mean Mg (mg/L)',
-            variable == 'K'    ~ 'Precipitation-weighted mean K (mg/L)',
-            variable == 'Na'   ~ 'Precipitation-weighted mean Na (mg/L)',
-            variable == 'Cl'   ~ 'Precipitation-weighted mean Cl (mg/L)',
-            variable == 'NO3'  ~ 'Precipitation-weighted mean NO3 (mg/L)',
-            variable == 'NH4'  ~ 'Precipitation-weighted mean NH4 (mg/L)',
-            variable == 'SO4'  ~ 'Precipitation-weighted mean SO4 (mg/L)',
+            variable == 'Ca'   ~ 'Precipitation-weighted mean Ca concentration',
+            variable == 'Mg'   ~ 'Precipitation-weighted mean Mg concentration',
+            variable == 'K'    ~ 'Precipitation-weighted mean K concentration',
+            variable == 'Na'   ~ 'Precipitation-weighted mean Na concentration',
+            variable == 'Cl'   ~ 'Precipitation-weighted mean Cl concentration',
+            variable == 'NO3'  ~ 'Precipitation-weighted mean NO3 concentration',
+            variable == 'NH4'  ~ 'Precipitation-weighted mean NH4 concentration',
+            variable == 'SO4'  ~ 'Precipitation-weighted mean SO4 concentration',
             TRUE ~ variable
+        ),
+        units = case_when(
+            variable == 'pH'   ~ 'unitless',
+            variable %in% c('Ca', 'Mg', 'K', 'Na', 'Cl', 'NO3', 'NH4', 'SO4') ~ 'mg/L',
+            variable == 'Cond_est' ~ 'uS/cm',
+            TRUE ~ NA_character_
         )
     )
 
@@ -368,19 +375,20 @@ if(length(ion_cols) > 0) {
     n_ions_available <- rep(0L, n_rows)
 
     for(ion in ion_cols) {
-        conc_mgl <- nadp_wide[[ion]]
-        conc_ueql <- conc_mgl / equiv_weights[ion] * 1000
-        contribution <- conc_ueql * equiv_conductances[ion] / 1000
+        conc_mgl <- nadp_wide[[ion]]                        # mg/L (from NADP grid)
+        conc_ueql <- conc_mgl / equiv_weights[ion] * 1000   # mg/L -> ueq/L
+        contribution <- conc_ueql * equiv_conductances[ion] / 1000  # ueq/L * (uS/cm)/(ueq/L) / 1000 -> uS/cm
         has_val <- !is.na(contribution)
         cond[has_val] <- cond[has_val] + contribution[has_val]
         n_ions_available[has_val] <- n_ions_available[has_val] + 1L
     }
 
     # Add H+ contribution estimated from pH
+    # pH = -log10([H+] in mol/L), so [H+] = 10^(-pH) mol/L
+    # Convert mol/L -> ueq/L: for H+ (charge=1), 1 mol/L = 1e6 ueq/L
     if('pH' %in% names(nadp_wide)) {
-        H_mgl <- 10^(-nadp_wide[['pH']]) * H_equiv_weight * 1000
-        H_ueql <- H_mgl / H_equiv_weight * 1000
-        H_contribution <- H_ueql * H_equiv_conductance / 1000
+        H_ueql <- 10^(-nadp_wide[['pH']]) * 1e6             # mol/L -> ueq/L
+        H_contribution <- H_ueql * H_equiv_conductance / 1000  # -> uS/cm
         has_H <- !is.na(H_contribution)
         cond[has_H] <- cond[has_H] + H_contribution[has_H]
         n_ions_available[has_H] <- n_ions_available[has_H] + 1L
@@ -405,7 +413,8 @@ if(length(ion_cols) > 0) {
     cond_long <- nadp_wide %>%
         select(site_code, year, Cond_est, Cond_est_n_ions) %>%
         mutate(variable = 'Cond_est',
-               variable_description = 'Estimated conductivity from ions (uS/cm)') %>%
+               variable_description = 'Estimated conductivity from ions and pH',
+               units = 'uS/cm') %>%
         rename(value = Cond_est)
 
     nadp_summary <- bind_rows(nadp_summary, select(cond_long, -Cond_est_n_ions))
