@@ -466,3 +466,28 @@ nadp_summary %>%
     ) %>%
     print(n = Inf)
 
+## verify fluxes match
+
+library(lubridate)
+
+clim <- ms_load_product(
+  macrosheds_root = '~/ssd2/macrosheds_stuff/ms_test/',
+  prodname = 'ws_attr_timeseries:climate',
+  site_codes = 'ALBION',
+  warn = FALSE
+)
+p <- ms_load_product(
+  macrosheds_root = '~/ssd2/macrosheds_stuff/ms_test/',
+  prodname = 'precipitation',
+  site_codes = 'ALBION',
+  warn = FALSE
+)
+albion_na_flux_1985 <- filter(clim, var == 'Na_flux_mean') %>% slice(1)
+albion_p_1985 <- filter(p, year(date) == 1985) %>% summarize(val = sum(val))
+
+albion_na_conc_1985_claude <- filter(nadp_summary, variable == 'Na', site_code == 'ALBION', year == 1985)$value
+#mg/L                             kg/ha                      mg/kg  mm/m     m^2/ha  mm             L/m^3
+albion_na_conc_1985_macrosheds <- (albion_na_flux_1985$val * 10e6 * 1000) / (10e4 * albion_p_1985 * 1000)
+
+#% difference (accounted for by precip source, raster processing, etc.
+(albion_na_conc_1985_macrosheds - albion_na_conc_1985_claude) / albion_na_conc_1985_macrosheds

@@ -9,3 +9,5 @@ data/
 sites_with_comid.csv
 /obsolete
 .aider*
+nadp/
+*.csv
